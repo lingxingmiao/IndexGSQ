@@ -439,3 +439,7 @@ def load(filename: str):
         index.映射表 = 映射表
         index.位深 = 位深
     return index
+def read_index(filename: str):
+    return load(filename)
+def write_index(index, filename: str):
+    index.save(filename)
