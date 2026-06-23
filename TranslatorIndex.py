@@ -158,7 +158,7 @@ def _GSQ_K编码_Numba(数组, 向量块, 最大量级):
         elif v_scale > 0.9999695: v_scale = 0.9999695
         缩放编码[i] = np.uint16(np.int16(round(v_scale * 32768.0)))
     return 量化值[:行数 * 维度], 最小编码, 缩放编码, np.float32(最大最小), np.float32(最大缩放)
-def 向量重排(数组, 聚类块大小):
+def 向量重排(数组, 聚类块大小, 重排乘数):
     向量数量, 向量维度 = 数组.shape
     if 向量数量 <= 聚类块大小:
         return 数组, np.arange(向量数量)
@@ -177,37 +177,35 @@ def 向量重排(数组, 聚类块大小):
     向量索引.nprobe = min(nlist, max(1, nlist // 4))
     已访问掩码 = np.zeros(向量数量, dtype=bool)
     重排索引列表 = []
-    粗搜数量 = 聚类块大小 * 4
+    粗搜数量 = 聚类块大小 * 重排乘数
     搜索指针 = 0
     已处理数量 = 0
-    with 向量数量 as 进度条:
-        while 已处理数量 < 向量数量:
-            while 搜索指针 < 向量数量 and 已访问掩码[搜索指针]:
-                搜索指针 += 1
-            if 搜索指针 >= 向量数量:
-                break
-            查询向量 = 数组_归一[搜索指针:搜索指针+1]
-            _, 邻居索引 = 向量索引.search(查询向量, 粗搜数量)
-            候选索引 = 邻居索引[0]
-            有效掩码 = (候选索引 != -1) & (~已访问掩码[候选索引])
-            有效索引 = 候选索引[有效掩码]
-            if len(有效索引) == 0:
-                有效索引 = np.array([搜索指针])
-            候选向量组 = 数组_归一[有效索引]
-            相似度分数 = np.dot(候选向量组, 查询向量.T).flatten()
-            截取数量 = min(聚类块大小, len(有效索引))
-            if len(有效索引) > 截取数量:
-                顶部索引 = np.argpartition(相似度分数, -截取数量)[-截取数量:]
-                顶部索引 = 顶部索引[np.argsort(相似度分数[顶部索引])[::-1]]
-            else:
-                顶部索引 = np.arange(len(有效索引))
-            最终索引 = 有效索引[顶部索引]
-            重排索引列表.extend(最终索引.tolist())
-            已访问掩码[最终索引] = True
-            已处理数量 += len(最终索引)
-            进度条.update(len(最终索引))
-            delete_ids = 最终索引.astype(np.int64)
-            向量索引.remove_ids(delete_ids)
+    while 已处理数量 < 向量数量:
+        while 搜索指针 < 向量数量 and 已访问掩码[搜索指针]:
+            搜索指针 += 1
+        if 搜索指针 >= 向量数量:
+            break
+        查询向量 = 数组_归一[搜索指针:搜索指针+1]
+        _, 邻居索引 = 向量索引.search(查询向量, 粗搜数量)
+        候选索引 = 邻居索引[0]
+        有效掩码 = (候选索引 != -1) & (~已访问掩码[候选索引])
+        有效索引 = 候选索引[有效掩码]
+        if len(有效索引) == 0:
+            有效索引 = np.array([搜索指针])
+        候选向量组 = 数组_归一[有效索引]
+        相似度分数 = np.dot(候选向量组, 查询向量.T).flatten()
+        截取数量 = min(聚类块大小, len(有效索引))
+        if len(有效索引) > 截取数量:
+            顶部索引 = np.argpartition(相似度分数, -截取数量)[-截取数量:]
+            顶部索引 = 顶部索引[np.argsort(相似度分数[顶部索引])[::-1]]
+        else:
+            顶部索引 = np.arange(len(有效索引))
+        最终索引 = 有效索引[顶部索引]
+        重排索引列表.extend(最终索引.tolist())
+        已访问掩码[最终索引] = True
+        已处理数量 += len(最终索引)
+        delete_ids = 最终索引.astype(np.int64)
+        向量索引.remove_ids(delete_ids)
     if 向量数量 <= 65535:
         数据类型 = np.uint16
     elif 向量数量 <= 4294967296:
@@ -275,15 +273,15 @@ def 极速LUT_Cosine检索(查询矩阵_归一, 量化值_1D, 缩放值_块, 最
                     score += X * 查询矩阵_归一[q_idx, d]
                 分数矩阵[q_idx, i] = score / 目标范数
     return 分数矩阵
-def 编码(self, 数组, 位深):
-    重排数组, self.映射表 = 向量重排(数组, self.聚类块)
+def 编码(self, 数组, 位深, 日志):
+    重排数组, self.映射表 = 向量重排(数组, self.Config.INDEX_GSQ_RERANKER_BLOCK_SIZE, self.Config.INDEX_GSQ_RERANKER_FACTOR)
     最大量级 = (1 << 位深) - 1
     总行数 = len(重排数组)
     维度 = 重排数组.shape[1]
-    for 起始 in range(0, 总行数, self.聚类块):
-        结束 = min(起始 + self.聚类块, 总行数)
+    for 起始 in range(0, 总行数, self.Config.INDEX_GSQ_RERANKER_BLOCK_SIZE):
+        结束 = min(起始 + self.Config.INDEX_GSQ_RERANKER_BLOCK_SIZE, 总行数)
         块数组 = 重排数组[起始:结束]
-        量化值, 最小编码, 缩放编码, 最大最小, 最大缩放 = _GSQ_K编码_Numba(块数组, self.向量块, 最大量级)
+        量化值, 最小编码, 缩放编码, 最大最小, 最大缩放 = _GSQ_K编码_Numba(块数组, self.Config.INDEX_GSQ_BLOCK_SIZE, 最大量级)
         if 位深 == 8:
             压缩 = 量化值
         elif 位深 == 6:
@@ -294,7 +292,10 @@ def 编码(self, 数组, 位深):
             压缩 = 加速打包3(量化值)
         elif 位深 == 2:
             压缩 = 加速打包2(量化值)
-        self.向量库.append({"packed": 压缩, "mins": 最小编码, "scales": 缩放编码, "max_min": 最大最小, "max_scale": 最大缩放, "shape": (结束 - 起始, 维度), "bit_depth": 位深, "vec_block": self.向量块})
+        try:
+            self.向量库.append({"packed": 压缩, "mins": 最小编码, "scales": 缩放编码, "max_min": 最大最小, "max_scale": 最大缩放, "shape": (结束 - 起始, 维度), "bit_depth": 位深, "vec_block": self.Config.INDEX_GSQ_BLOCK_SIZE})
+        except UnboundLocalError:
+            日志("log.index.gsq.quantization.err", info_level=3)
 def 重排列表(原始列表, 映射表):
     if 原始列表 is None:
         return None
@@ -311,22 +312,18 @@ def _解包(数据包, 位深, 行数, 维度):
     elif 位深 == 2:
         return 加速解包2(数据包["packed"], 行数 * 维度)
 class IndexGSQKCosine:
-    def __init__(self, vectors_block=128, reranker_block=128, quantization: int = 2):
-        self.向量块 = vectors_block
-        self.聚类块 = reranker_block
+    def __init__(self, app = None, quantization: int = 2): # Module
+        self.日志 = app.日志
+        self.Config = app.Config
         self.向量库 = []
         self.映射表 = []
         self.位深 = quantization
-        self.texts = []
+        self.模式 = "IndexGSQKCosine"
     def add(self, vectors):
-        编码(self, vectors, self.位深)
-    def text(self, texts):
-        return 重排列表(texts, self.映射表)
+        编码(self, vectors, self.位深, self.日志)
     def save(self, filename: str):
         with open(filename, 'wb') as f:
-            pickle.dump((self.向量库, self.映射表, self.位深), f, protocol=pickle.HIGHEST_PROTOCOL)
-    def save_text(self, texts):
-        self.texts = self.text(texts)
+            pickle.dump((self.模式, self.向量库, self.映射表, self.位深), f, protocol=pickle.HIGHEST_PROTOCOL)
     def search(self, query, k):
         if isinstance(self.映射表, list):
             self.映射表 = np.array(self.映射表)
@@ -372,22 +369,18 @@ class IndexGSQKCosine:
             TopK分数 = np.hstack([TopK分数, 填充分数])
         return TopK分数.astype(np.float32), 原始TopK索引
 class IndexGSQKCosineFast:
-    def __init__(self, vectors_block=128, reranker_block=128, quantization: int = 2):
-        self.向量块 = vectors_block
-        self.聚类块 = reranker_block
+    def __init__(self, app = None, quantization: int = 2): # Module
+        self.日志 = app.日志
+        self.Config = app.Config
         self.向量库 = []
         self.映射表 = []
         self.位深 = quantization
-        self.texts = []
+        self.模式 = "IndexGSQKCosineFast"
     def add(self, vectors):
-        编码(self, vectors, self.位深)
-    def text(self, texts):
-        return 重排列表(texts, self.映射表)
+        编码(self, vectors, self.位深, self.日志)
     def save(self, filename: str):
         with open(filename, 'wb') as f:
-            pickle.dump((self.向量库, self.映射表, self.位深), f, protocol=pickle.HIGHEST_PROTOCOL)
-    def save_text(self, texts):
-        self.texts = self.text(texts)
+            pickle.dump((self.模式, self.向量库, self.映射表, self.位深), f, protocol=pickle.HIGHEST_PROTOCOL)
     def search(self, query, k):
         查询矩阵 = np.atleast_2d(query).astype(np.float32)
         查询数量 = 查询矩阵.shape[0]
@@ -433,8 +426,8 @@ class IndexGSQKCosineFast:
         return TopK分数.astype(np.float32), 原始TopK索引
 def load(filename: str):
     with open(filename, 'rb') as f:
-        向量库, 映射表, 位深 = pickle.load(f)
-        index = IndexGSQKCosine()
+        模式, 向量库, 映射表, 位深 = pickle.load(f)
+        index = globals()[模式]()
         index.向量库 = 向量库
         index.映射表 = 映射表
         index.位深 = 位深
