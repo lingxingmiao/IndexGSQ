@@ -401,7 +401,7 @@ class IndexGSQKCosineFast:
         总目标数 = sum(包["shape"][0] for 包 in self.向量库)
         全局分数 = np.zeros((查询数量, 总目标数), dtype=np.float32)
         偏移 = 0
-        for 数据包 in self.向量库:
+        for 数据包 in tqdm(self.向量库, desc="search"):
             行数, 维度 = 数据包["shape"]
             缩放值 = (np.asarray(数据包["scales"]).view(np.int16).astype(np.float32)
                     / 32768.0 * 数据包["max_scale"]).reshape(-1, 维度)
