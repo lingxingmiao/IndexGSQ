@@ -17,7 +17,7 @@
 - 无法动态添加向量（向量重排+GSQ_K所影响）
 - 文本需要同步重排
 - 导入向量时需要占用大量内存
-- 索引速度较慢（我的电脑是 2.5个/s）
+- 索引速度较慢（我的电脑是 12.28个/s (IndexGSQKCosineFast)）
 
 核心内容、召回率 全部取自[TranslatorMinecraft](https://github.com/lingxingmiao/Translator-Minecraft/)的R1.6 B2版本
 
