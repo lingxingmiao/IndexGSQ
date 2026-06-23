@@ -4,14 +4,14 @@ import faiss
 import pickle
 from tqdm import tqdm
 
-@nb.njit(cache=True)
+@njit(cache=True)
 def 加速打包2(量化值):
     数量 = len(量化值); 输出长度 = (数量 + 3) >> 2
     输出 = np.zeros(输出长度, dtype=np.uint8)
     for 索 in range(数量):
         输出[索 >> 2] |= np.uint8(量化值[索] << ((索 & 3) << 1))
     return 输出
-@nb.njit(cache=True)
+@njit(cache=True)
 def 加速解包2(压缩, 数量):
     输出 = np.empty(数量, dtype=np.uint8)
     for 索 in range(数量):
@@ -21,7 +21,7 @@ def 加速解包2(压缩, 数量):
         else:
             输出[索] = np.uint8(0)
     return 输出
-@nb.njit(cache=True)
+@njit(cache=True)
 def 加速打包3(量化值):
     数量 = len(量化值); 输出长度 = (数量 + 7) // 8
     输出 = np.zeros(输出长度 * 3, dtype=np.uint8)
@@ -39,7 +39,7 @@ def 加速打包3(量化值):
         输出[偏移+1] = np.uint8(((v2&1)<<7)|(v3<<4)|(v4<<1)|(v5>>2))
         输出[偏移+2] = np.uint8(((v5&3)<<6)|(v6<<3)|v7)
     return 输出
-@nb.njit(cache=True)
+@njit(cache=True)
 def 加速解包3(压缩, 数量):
     块数 = len(压缩) // 3; 输出 = np.empty(块数 * 8, dtype=np.uint8)
     for 块索 in range(块数):
@@ -54,7 +54,7 @@ def 加速解包3(压缩, 数量):
         输出[基索+6] = np.uint8((b2>>3)&7)
         输出[基索+7] = np.uint8(b2&7)
     return 输出[:数量]
-@nb.njit(cache=True)
+@njit(cache=True)
 def 加速打包4(量化值):
     数量 = len(量化值); 输出长度 = (数量 + 1) >> 1
     输出 = np.zeros(输出长度, dtype=np.uint8)
@@ -64,7 +64,7 @@ def 加速打包4(量化值):
         else:
             输出[索 >> 1] |= np.uint8(量化值[索] & 0xF)
     return 输出
-@nb.njit(cache=True)
+@njit(cache=True)
 def 加速解包4(压缩, 数量):
     输出 = np.empty(数量, dtype=np.uint8)
     for 索 in range(数量):
@@ -77,7 +77,7 @@ def 加速解包4(压缩, 数量):
         else:
             输出[索] = np.uint8(0)
     return 输出
-@nb.njit(cache=True)
+@njit(cache=True)
 def 加速打包6(量化值):
     数量 = len(量化值); 输出长度 = (数量 + 3) // 4
     输出 = np.zeros(输出长度 * 3, dtype=np.uint8)
@@ -91,7 +91,7 @@ def 加速打包6(量化值):
         输出[偏移+1] = np.uint8(((v1&0xF)<<4)|(v2>>2))
         输出[偏移+2] = np.uint8(((v2&3)<<6)|v3)
     return 输出
-@nb.njit(cache=True)
+@njit(cache=True)
 def 加速解包6(压缩, 数量):
     块数 = len(压缩) // 3; 输出 = np.empty(块数 * 4, dtype=np.uint8)
     for 块索 in range(块数):
@@ -102,7 +102,7 @@ def 加速解包6(压缩, 数量):
         输出[基索+2] = np.uint8(((b1&0xF)<<2)|(b2>>6))
         输出[基索+3] = np.uint8(b2&0x3F)
     return 输出[:数量]
-@nb.njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=True)
 def _GSQ_K编码_Numba(数组, 向量块, 最大量级):
     行数, 维度 = 数组.shape
     填充行 = (-行数) % 向量块
@@ -221,14 +221,48 @@ def 向量重排(数组, 聚类块大小):
     映射表 = np.array(重排索引列表, dtype=数据类型)
     重排后数组 = 数组[映射表]
     return 重排后数组, 映射表
-@nb.njit(fastmath=True, parallel=True, cache=True)
+@njit(cache=True)
+def 预计算范数LUT(量化值_1D, 缩放值, 最小值, 最大量级, 向量块, 维度):
+    组数 = 缩放值.shape[0]
+    总行数 = len(量化值_1D) // 维度
+    inv_L = np.float32(1.0 / 最大量级)
+    codebook = np.zeros((组数, 维度, 最大量级 + 1), dtype=np.float32)
+    for g in range(组数):
+        for d in range(维度):
+            for v in range(最大量级 + 1):
+                codebook[g, d, v] = (np.float32(v) * inv_L) * 缩放值[g, d] + 最小值[g, d]
+    范数 = np.zeros(总行数, dtype=np.float32)
+    for g in range(组数):
+        起始 = g * 向量块
+        结束 = min(起始 + 向量块, 总行数)
+        for i in range(起始, 结束):
+            s = np.float32(0.0)
+            for d in range(维度):
+                v = codebook[g, d, 量化值_1D[i * 维度 + d]]
+                s += v * v
+            范数[i] = np.sqrt(s) if s > 1e-8 else 1e-8
+    return 范数
+@njit(cache=True)
+def 批量反量化(量化值_1D, 缩放值, 最小值, 最大量级, 向量块, 维度):
+    总行数 = len(量化值_1D) // 维度
+    组数 = 缩放值.shape[0]
+    inv_L = np.float32(1.0 / 最大量级)
+    结果 = np.empty((总行数, 维度), dtype=np.float32)
+    for g in range(组数):
+        起始 = g * 向量块
+        结束 = min(起始 + 向量块, 总行数)
+        for i in range(起始, 结束):
+            for d in range(维度):
+                结果[i, d] = (np.float32(量化值_1D[i * 维度 + d]) * inv_L) * 缩放值[g, d] + 最小值[g, d]
+    return 结果
+@njit(fastmath=True, parallel=True, cache=True)
 def 极速LUT_Cosine检索(查询矩阵_归一, 量化值_1D, 缩放值_块, 最小值_块, 最大量级, 块大小, 维度):
     查询数 = 查询矩阵_归一.shape[0]
     总行数 = 量化值_1D.shape[0] // 维度
     组数 = 缩放值_块.shape[0]
     分数矩阵 = np.zeros((查询数, 总行数), dtype=np.float32)
     inv_L = np.float32(1.0 / 最大量级)
-    for g in nb.prange(组数):
+    for g in numba.prange(组数):
         起始行 = g * 块大小
         结束行 = min(起始行 + 块大小, 总行数)
         for i in range(起始行, 结束行):
@@ -244,12 +278,42 @@ def 极速LUT_Cosine检索(查询矩阵_归一, 量化值_1D, 缩放值_块, 最
                     X = (np.float32(量化值_1D[i * 维度 + d]) * inv_L) * 缩放值_块[g, d] + 最小值_块[g, d]
                     score += X * 查询矩阵_归一[q_idx, d]
                 分数矩阵[q_idx, i] = score / 目标范数
-                
     return 分数矩阵
+def 编码(self, 数组, 位深):
+    重排数组, self.映射表 = 向量重排(数组, self.聚类块)
+    最大量级 = (1 << 位深) - 1
+    总行数 = len(重排数组)
+    维度 = 重排数组.shape[1]
+    for 起始 in range(0, 总行数, self.聚类块):
+        结束 = min(起始 + self.聚类块, 总行数)
+        块数组 = 重排数组[起始:结束]
+        量化值, 最小编码, 缩放编码, 最大最小, 最大缩放 = _GSQ_K编码_Numba(块数组, self.向量块, 最大量级)
+        if 位深 == 8:
+            压缩 = 量化值
+        elif 位深 == 6:
+            压缩 = 加速打包6(量化值)
+        elif 位深 == 4:
+            压缩 = 加速打包4(量化值)
+        elif 位深 == 3:
+            压缩 = 加速打包3(量化值)
+        elif 位深 == 2:
+            压缩 = 加速打包2(量化值)
+        self.向量库.append({"packed": 压缩, "mins": 最小编码, "scales": 缩放编码, "max_min": 最大最小, "max_scale": 最大缩放, "shape": (结束 - 起始, 维度), "bit_depth": 位深, "vec_block": self.向量块})
 def 重排列表(原始列表, 映射表):
     if 原始列表 is None:
         return None
     return [原始列表[i] for i in 映射表]
+def _解包(数据包, 位深, 行数, 维度):
+    if 位深 == 8:
+        return 数据包["packed"]
+    elif 位深 == 6:
+        return 加速解包6(数据包["packed"], 行数 * 维度)
+    elif 位深 == 4:
+        return 加速解包4(数据包["packed"], 行数 * 维度)
+    elif 位深 == 3:
+        return 加速解包3(数据包["packed"], 行数 * 维度)
+    elif 位深 == 2:
+        return 加速解包2(数据包["packed"], 行数 * 维度)
 class IndexGSQKCosine:
     def __init__(self, vectors_block=128, reranker_block=128, quantization: int = 2):
         self.向量块 = vectors_block
@@ -258,30 +322,15 @@ class IndexGSQKCosine:
         self.映射表 = []
         self.位深 = quantization
         self.texts = []
-    def 编码(self, 数组, 位深):
-        重排数组, self.映射表 = 向量重排(数组, self.聚类块)
-        最大量级 = (1 << 位深) - 1
-        总行数 = len(重排数组)
-        维度 = 重排数组.shape[1]
-        for 起始 in range(0, 总行数, self.聚类块):
-            结束 = min(起始 + self.聚类块, 总行数)
-            块数组 = 重排数组[起始:结束]
-            量化值, 最小编码, 缩放编码, 最大最小, 最大缩放 = _GSQ_K编码_Numba(块数组, self.向量块, 最大量级)
-            if 位深 == 8:
-                压缩 = 量化值
-            elif 位深 == 6:
-                压缩 = 加速打包6(量化值)
-            elif 位深 == 4:
-                压缩 = 加速打包4(量化值)
-            elif 位深 == 3:
-                压缩 = 加速打包3(量化值)
-            elif 位深 == 2:
-                压缩 = 加速打包2(量化值)
-            self.向量库.append({"packed": 压缩, "mins": 最小编码, "scales": 缩放编码, "max_min": 最大最小, "max_scale": 最大缩放, "shape": (结束 - 起始, 维度), "bit_depth": 位深, "vec_block": self.向量块})
     def add(self, vectors):
-        self.编码(vectors, self.位深)
+        编码(self, vectors, self.位深)
     def text(self, texts):
         return 重排列表(texts, self.映射表)
+    def save(self, filename: str):
+        with open(filename, 'wb') as f:
+            pickle.dump((self.向量库, self.映射表, self.位深), f, protocol=pickle.HIGHEST_PROTOCOL)
+    def save_text(self, texts):
+        self.texts = self.text(texts)
     def search(self, query, k):
         if isinstance(self.映射表, list):
             self.映射表 = np.array(self.映射表)
@@ -326,11 +375,66 @@ class IndexGSQKCosine:
             原始TopK索引 = np.hstack([原始TopK索引, 填充索引])
             TopK分数 = np.hstack([TopK分数, 填充分数])
         return TopK分数.astype(np.float32), 原始TopK索引
+class IndexGSQKCosineFast:
+    def __init__(self, vectors_block=128, reranker_block=128, quantization: int = 2):
+        self.向量块 = vectors_block
+        self.聚类块 = reranker_block
+        self.向量库 = []
+        self.映射表 = []
+        self.位深 = quantization
+        self.texts = []
+    def add(self, vectors):
+        编码(self, vectors, self.位深)
+    def text(self, texts):
+        return 重排列表(texts, self.映射表)
     def save(self, filename: str):
         with open(filename, 'wb') as f:
             pickle.dump((self.向量库, self.映射表, self.位深), f, protocol=pickle.HIGHEST_PROTOCOL)
     def save_text(self, texts):
         self.texts = self.text(texts)
+    def search(self, query, k):
+        查询矩阵 = np.atleast_2d(query).astype(np.float32)
+        查询数量 = 查询矩阵.shape[0]
+        查询范数 = np.linalg.norm(查询矩阵, axis=1, keepdims=True)
+        查询范数[查询范数 < 1e-8] = 1e-8
+        查询归一 = 查询矩阵 / 查询范数
+        总目标数 = sum(包["shape"][0] for 包 in self.向量库)
+        全局分数 = np.zeros((查询数量, 总目标数), dtype=np.float32)
+        偏移 = 0
+        for 数据包 in self.向量库:
+            行数, 维度 = 数据包["shape"]
+            缩放值 = (np.asarray(数据包["scales"]).view(np.int16).astype(np.float32)
+                    / 32768.0 * 数据包["max_scale"]).reshape(-1, 维度)
+            最小值 = (np.asarray(数据包["mins"]).view(np.int16).astype(np.float32)
+                    / 32768.0 * 数据包["max_min"]).reshape(-1, 维度)
+            位深 = 数据包["bit_depth"]
+            量化值 = _解包(数据包, 位深, 行数, 维度)
+            块矩阵 = 批量反量化(量化值, 缩放值, 最小值, (1 << 位深) - 1, 数据包["vec_block"], 维度)
+            块范数 = 数据包.get("norms")
+            if 块范数 is None:
+                块范数 = np.linalg.norm(块矩阵, axis=1)
+                块范数[块范数 < 1e-8] = 1e-8
+                数据包["norms"] = 块范数
+            点积矩阵 = 查询归一 @ 块矩阵.T
+            全局分数[:, 偏移:偏移+行数] = 点积矩阵 / 块范数[np.newaxis, :]
+            偏移 += 行数
+        实际_k = min(k, 总目标数)
+        if 实际_k > 0:
+            未排序索引 = np.argpartition(全局分数, -实际_k, axis=1)[:, -实际_k:]
+            顶部分数 = np.take_along_axis(全局分数, 未排序索引, axis=1)
+            排序顺序 = np.argsort(-顶部分数, axis=1)
+            重排后TopK索引 = np.take_along_axis(未排序索引, 排序顺序, axis=1)
+            TopK分数 = np.take_along_axis(顶部分数, 排序顺序, axis=1)
+        else:
+            重排后TopK索引 = np.empty((查询数量, 0), dtype=np.int64)
+            TopK分数 = np.empty((查询数量, 0), dtype=np.float32)
+        原始TopK索引 = np.take(self.映射表, 重排后TopK索引).astype(np.int64)
+        if k > 总目标数:
+            填充索引 = np.full((查询数量, k - 总目标数), -1, dtype=np.int64)
+            填充分数 = np.full((查询数量, k - 总目标数), -np.inf, dtype=np.float32)
+            原始TopK索引 = np.hstack([原始TopK索引, 填充索引])
+            TopK分数 = np.hstack([TopK分数, 填充分数])
+        return TopK分数.astype(np.float32), 原始TopK索引
 def load(filename: str):
     with open(filename, 'rb') as f:
         向量库, 映射表, 位深 = pickle.load(f)
