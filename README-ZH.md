@@ -1,5 +1,5 @@
 # IndexGSQ
-1GB嵌入向量使用~90MB内存进行索引，并在2.5bit保持92%+的召回率(383,113个向量)
+1GB嵌入向量使用75-90MB内存进行索引，并在2.5bit保持92%+的召回率(383,113个向量)
 
 ### 召回率
 - 8位最高100%
@@ -34,6 +34,7 @@ import time
 
 np.random.seed(42) # 测试使用固定种子
 
+# 如果你的项目使用的是Faiss想要兼容IndexGSQ仅需要替换 faiss.IndexIP (或者其他算法)替换为 indexgsq.IndexGSQKCosineFast 或 indexgsq.IndexGSQKCosine 之后修改实例化参数即可
 index = indexgsq.IndexGSQKCosine(vectors_block=128, reranker_block=128, quantization=2) # 创建索引（括号内为默认参数 可不写）
 #index = indexgsq.IndexGSQKCosineFast(vectors_block=128, reranker_block=128, quantization=2) # 高速方法 需要消耗更多内存
 # vectors_block  : 每个子块包含的向量数（用于量化）
@@ -51,13 +52,14 @@ print(f"搜索耗时：{time.time() - start_time:.4f}秒")
 print("Top-10索引：", ids[0])
 
 texts = [f"文本_{i}" for i in range(number_of_vectors)] # 假设这是你要索引的文本
-reordered_texts = index.text(texts) # 重新排序（必须）
-top_texts = [reordered_texts[i] for i in ids[0] if i != -1]
+top_texts = [texts[i] for i in ids[0] if i != -1]
 print("Top-10文本：", top_texts)
 
-index.save_text(texts) # 导入文本（可选 自动重排）
-index.save("index.gsqk") # 保存索引（后缀不限）
+indexgsq.write_index(index, "index.gsqk") # 保存索引
 
-new_index = indexgsq.load("index.gsqk") # 加载索引
-new_texts = new_index.texts # 上面导入的文本
+new_index = indexgsq.read_index("index.gsqk") # 加载索引
 ```
+
+### 仓库文件
+- `indexgsq.py` : 常规版本, 作为项目的库使用
+- `TranslatorIndexGSQ` : [TranslatorMinecraft](https://github.com/lingxingmiao/Translator-Minecraft/)特供版本, 用于兼容[TranslatorLib.py](https://github.com/lingxingmiao/Translator-Minecraft/blob/main/TranslatorLib.py)与非常规传入方式. 算法与`indexgsq.py`相同
