@@ -62,17 +62,12 @@ print("Top‑10 indices:", ids[0])
 
 # Associate text metadata
 texts = [f"text_{i}" for i in range(10000)]   # dummy text labels
-reordered_texts = index.text(texts)            # re‑order texts to match internal ordering
-top_texts = [reordered_texts[i] for i in ids[0] if i != -1]
+top_texts = [texts[i] for i in ids[0] if i != -1]
 print("Top‑10 texts:", top_texts)
-
-# Optionally save the re‑ordered texts together with the index
-index.save_text(texts)          # automatically re‑orders and stores
 
 # Save the full index (extension is arbitrary)
 index.save("index.gsqk")        # the saved file size for the above vectors is theoretically ~2.77 MB
 
 # Load the index later
 new_index = indexgsq.load("index.gsqk")
-new_texts = new_index.texts     # the previously saved texts are available
 ```
