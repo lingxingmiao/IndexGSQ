@@ -51,7 +51,7 @@ index = indexgsq.IndexGSQKCosine(
     quantization=2          # quantization bits: 2, 3, 4, 6, or 8
 )
 
-# Generate some random vectors (e.g., 10,000 vectors of dimension 1024 → ~312.5 MB)
+# Generate some random vectors (e.g., 10,000 vectors of dimension 1024 → ~39 MB)
 vectors = np.random.randn(10000, 1024).astype(np.float32)
 index.add(vectors)          # this step is time‑consuming and memory‑hungry
 
