@@ -17,7 +17,7 @@
 - 无法动态添加向量（向量重排+GSQ_K所影响）
 - 文本需要同步重排
 - 导入向量时需要占用大量内存
-- 索引速度较慢（我的电脑是0.4S一个）
+- 索引速度较慢（我的电脑是 2.5个/s）
 
 核心内容、召回率 全部取自[TranslatorMinecraft](https://github.com/lingxingmiao/Translator-Minecraft/)的R1.6 B2版本
 
@@ -31,12 +31,14 @@
 import indexgsq
 import numpy as np
 
+np.random.seed(42) # 测试使用固定种子
+
 index = indexgsq.IndexGSQKCosine(vectors_block=128, reranker_block=128, quantization=2) # 创建索引（括号内为默认参数 可不写）
 # vectors_block  : 每个子块包含的向量数（用于量化）
 # reranker_block : 重排时每个聚类块的大小
 # quantization   : 量化位数，可选 2,3,4,6,8
 
-vectors = np.random.randn(10000, 1024).astype(np.float32) # 假设这是你的向量
+vectors = np.random.randn(10000, 1024).astype(np.float32) # 假设这是你的向量 这里共312.5MB
 index.add(vectors) # 添加向量到索引（该步骤耗时较长 内存占用较高 为添加向量的二倍）
 
 query = np.random.randn(1024).astype(np.float32) # 假设这是你要查询的向量
@@ -49,7 +51,7 @@ top_texts = [reordered_texts[i] for i in ids[0] if i != -1]
 print("Top-10文本：", top_texts)
 
 index.save_text(texts) # 导入文本（可选 自动重排）
-index.save("index.gsqk") # 保存索引（后缀不限）
+index.save("index.gsqk") # 保存索引（后缀不限） 按照上面生成的向量 保存文件大小理论为2.77MB
 
 new_index = indexgsq.load("index.gsqk") # 加载索引
 new_texts = new_index.texts # 上面导入的文本
