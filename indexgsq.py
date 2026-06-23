@@ -321,16 +321,12 @@ class IndexGSQKCosine:
         self.向量库 = []
         self.映射表 = []
         self.位深 = quantization
-        self.texts = []
+        self.模式 = "IndexGSQKCosine"
     def add(self, vectors):
         编码(self, vectors, self.位深)
-    def text(self, texts):
-        return 重排列表(texts, self.映射表)
     def save(self, filename: str):
         with open(filename, 'wb') as f:
             pickle.dump((self.向量库, self.映射表, self.位深), f, protocol=pickle.HIGHEST_PROTOCOL)
-    def save_text(self, texts):
-        self.texts = self.text(texts)
     def search(self, query, k):
         if isinstance(self.映射表, list):
             self.映射表 = np.array(self.映射表)
@@ -382,16 +378,12 @@ class IndexGSQKCosineFast:
         self.向量库 = []
         self.映射表 = []
         self.位深 = quantization
-        self.texts = []
+        self.模式 = "IndexGSQKCosineFast"
     def add(self, vectors):
         编码(self, vectors, self.位深)
-    def text(self, texts):
-        return 重排列表(texts, self.映射表)
     def save(self, filename: str):
         with open(filename, 'wb') as f:
             pickle.dump((self.向量库, self.映射表, self.位深), f, protocol=pickle.HIGHEST_PROTOCOL)
-    def save_text(self, texts):
-        self.texts = self.text(texts)
     def search(self, query, k):
         查询矩阵 = np.atleast_2d(query).astype(np.float32)
         查询数量 = 查询矩阵.shape[0]
@@ -437,8 +429,8 @@ class IndexGSQKCosineFast:
         return TopK分数.astype(np.float32), 原始TopK索引
 def load(filename: str):
     with open(filename, 'rb') as f:
-        向量库, 映射表, 位深 = pickle.load(f)
-        index = IndexGSQKCosine()
+        模式, 向量库, 映射表, 位深 = pickle.load(f)
+        index = globals()[模式]()
         index.向量库 = 向量库
         index.映射表 = 映射表
         index.位深 = 位深
