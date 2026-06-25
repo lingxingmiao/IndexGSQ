@@ -21,6 +21,7 @@ All code is entirely AI-generated.
 ### Indexing Methods
 - **Speed Ranking**: `IndexGSQKCosineMoE` > `IndexGSQKCosineFast` > `IndexGSQKCosine`
 - **Memory Ranking**: `IndexGSQKCosine` < `IndexGSQKCosineFast` < `IndexGSQKCosineMoE`
+- **Recall ranking**: `IndexGSQKCosine` = `IndexGSQKCosineFast` > `IndexGSQKCosineMoE`
 
 `IndexGSQKCosine` and `IndexGSQKCosineFast` are benchmarked against `faiss.IndexFlatIP`.
 
