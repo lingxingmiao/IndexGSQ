@@ -653,6 +653,223 @@ class IndexGSQKCosineMoE:
             原始TopK索引 = np.hstack([原始TopK索引, 填充索引])
             TopK分数 = np.hstack([TopK分数, 填充分数])
         return TopK分数.astype(np.float32), 原始TopK索引
+class IndexGSQKCosineMoEPlus:
+    def __init__(self, app=None, quantization: int = 2):
+        if app:
+            self.日志 = app.日志
+            self.Config = app.Config
+        self.向量库 = []
+        self.映射表 = []
+        self.位深 = quantization
+        self.模式 = "IndexGSQKCosineMoEPlus"
+        self.路由数据 = None  
+        self.exp = 32 
+        self.已训练 = False
+        self.旋转块矩阵 = None
+        self.LM中心 = None      
+        self.LM边界 = None
+    def save(self, filename: str):
+        with open(filename, 'wb') as f:
+            pickle.dump({
+                "模式": self.模式,
+                "向量库": self.向量库,
+                "映射表": self.映射表,
+                "位深": self.位深,
+                "路由数据": self.路由数据,
+                "exp": self.exp,
+                "已训练": self.已训练,
+                "旋转块矩阵": self.旋转块矩阵.astype(np.float16),
+                "LM中心": self.LM中心,
+                "LM边界": self.LM边界
+            }, f, protocol=pickle.HIGHEST_PROTOCOL)
+    def _应用分块旋转(self, 数组, 旋转块矩阵):
+        N, D = 数组.shape
+        n块 = D // 16
+        分块 = 数组.reshape(N, n块, 16)
+        旋转后 = np.einsum('nbi,bij->nbj', 分块, 旋转块矩阵, optimize=True)
+        return 旋转后.reshape(N, D)
+    def _SVD学习最优旋转_分块(self, 数据, 迭代次数=5, 初始中心=None):
+        行数, 维度 = 数据.shape
+        n块 = 维度 // 16
+        旋转块 = np.tile(np.eye(16, dtype=np.float32), (n块, 1, 1))
+        中心 = 初始中心 if 初始中心 is not None else np.linspace(-2.5, 2.5, 16).astype(np.float32)
+        边界 = (中心[:-1] + 中心[1:]) / 2.0
+        Q块大小 = self.Config.INDEX_GSQ_MOE_BLOCK_SIZE
+        for _ in range(迭代次数):
+            旋转后 = self._应用分块旋转(数据, 旋转块)
+            展平 = 旋转后.reshape(-1, Q块大小)
+            高位, 低位 = np.percentile(展平, [99.9, 0.1], axis=1, keepdims=True)
+            np.clip(展平, 低位, 高位, out=展平)
+            标准差 = np.maximum(np.std(展平, axis=1, ddof=0, keepdims=True), 1e-8)
+            归一化 = 展平 / 标准差
+            量化索引 = np.searchsorted(边界, 归一化).astype(np.uint8)
+            重建 = (中心[量化索引] * 标准差).reshape(行数, 维度)
+            重建分块 = 重建.reshape(行数, n块, 16)
+            数据分块 = 数据.reshape(行数, n块, 16)
+            for b in range(n块):
+                协方差 = 数据分块[:, b, :].T @ 重建分块[:, b, :]
+                U, _, Vt = np.linalg.svd(协方差)
+                旋转块[b] = (U @ Vt).astype(np.float32)
+        return 旋转块
+    def _劳埃德最大化_路由(self, 数据, 聚类数, 迭代次数):
+        中心 = np.percentile(数据, np.linspace(0, 100, 聚类数+2)[1:-1]).astype(np.float32)
+        for _ in range(迭代次数):
+            边界 = (中心[:-1] + 中心[1:]) / 2.0
+            量化索引 = np.searchsorted(边界, 数据).astype(np.intp)
+            计数 = np.bincount(量化索引, minlength=聚类数)
+            加权和 = np.bincount(量化索引, weights=数据, minlength=聚类数)
+            有效 = 计数 > 0
+            新中心 = np.where(有效, 加权和 / np.maximum(计数, 1), 中心).astype(np.float32)
+            if np.max(np.abs(新中心 - 中心)) < 1e-5:
+                中心 = 新中心
+                break
+            中心 = 新中心
+        中心 = np.sort(中心)
+        return 中心, (中心[:-1] + 中心[1:]) / 2.0
+    def train(self, 训练数据):
+        self.旋转块矩阵 = self._SVD学习最优旋转_分块(训练数据, 迭代次数=self.Config.INDEX_GSQ_MOE_SPL_SVD, 初始中心=None)
+        旋转后 = self._应用分块旋转(训练数据, self.旋转块矩阵)
+        展平 = 旋转后.reshape(-1, 32)
+        高位, 低位 = np.percentile(展平, [99.9, 0.1], axis=1, keepdims=True)
+        np.clip(展平, 低位, 高位, out=展平)
+        标准差 = np.maximum(np.std(展平, axis=1, ddof=0, keepdims=True), 1e-8)
+        归一化 = 展平 / 标准差
+        self.LM中心, self.LM边界 = self._劳埃德最大化_路由(归一化.ravel(), self.Config.INDEX_GSQ_MOE_KM_LM, self.Config.INDEX_GSQ_MOE_SPL_LM)
+        self.旋转块矩阵 = self._SVD学习最优旋转_分块(训练数据, 迭代次数=self.Config.INDEX_GSQ_MOE_SPL_SVD, 初始中心=self.LM中心)
+        旋转后 = self._应用分块旋转(训练数据, self.旋转块矩阵)
+        展平 = 旋转后.reshape(-1, 32)
+        高位, 低位 = np.percentile(展平, [99.9, 0.1], axis=1, keepdims=True)
+        np.clip(展平, 低位, 高位, out=展平)
+        标准差 = np.maximum(np.std(展平, axis=1, ddof=0, keepdims=True), 1e-8)
+        归一化 = 展平 / 标准差
+        self.LM中心, self.LM边界 = self._劳埃德最大化_路由(归一化.ravel(), self.Config.INDEX_GSQ_MOE_KM_LM, self.Config.INDEX_GSQ_MOE_SPL_LM)
+        self.已训练 = True
+    def _编码路由数据(self, 均值矩阵):
+        行数, 维度 = 均值矩阵.shape
+        旋转后 = self._应用分块旋转(均值矩阵, self.旋转块矩阵)
+        展平 = 旋转后.reshape(-1, 32)
+        高位, 低位 = np.percentile(展平, [99.9, 0.1], axis=1, keepdims=True)
+        np.clip(展平, 低位, 高位, out=展平)
+        标准差 = np.maximum(np.std(展平, axis=1, ddof=0), 1e-8).astype(np.float32)
+        归一化 = 展平 / 标准差[:, None]
+        量化索引 = np.searchsorted(self.LM边界, 归一化).astype(np.uint8)
+        最大缩放 = max(float(np.max(标准差)), 1e-8)
+        return {
+            "PackedVector": 加速打包4(量化索引.ravel()),
+            "Scale": (标准差 / 最大缩放).astype(np.float16), 
+            "MaxScale": 最大缩放,
+            "Shape": (行数, 维度)
+        }
+    def add(self, vectors):
+        if not self.已训练:
+            self.train(vectors)
+        重排数组, self.映射表 = 向量重排(vectors, self.Config.INDEX_GSQ_RERANKER_BLOCK_SIZE, self.Config.INDEX_GSQ_RERANKER_FACTOR)
+        最大量级 = (1 << self.位深) - 1
+        总行数 = len(重排数组)
+        维度 = 重排数组.shape[1]
+        所有代表向量 = []
+        for 起始 in range(0, 总行数, self.Config.INDEX_GSQ_RERANKER_BLOCK_SIZE):
+            结束 = min(起始 + self.Config.INDEX_GSQ_RERANKER_BLOCK_SIZE, 总行数)
+            块数组 = 重排数组[起始:结束]
+            所有代表向量.append(块数组[0])
+            if 块数组.shape[0] > 1:
+                所有代表向量.append(块数组[-1])
+            else:
+                所有代表向量.append(块数组[0])
+            量化值, 最小编码, 缩放编码, 最大最小, 最大缩放 = _GSQ_K编码_Numba(块数组, self.Config.INDEX_GSQ_BLOCK_SIZE, 最大量级)
+            if self.位深 == 8: 压缩 = 量化值
+            elif self.位深 == 6: 压缩 = 加速打包6(量化值)
+            elif self.位深 == 4: 压缩 = 加速打包4(量化值)
+            elif self.位深 == 3: 压缩 = 加速打包3(量化值)
+            elif self.位深 == 2: 压缩 = 加速打包2(量化值)
+            self.向量库.append({
+                "packed": 压缩, "mins": 最小编码, "scales": 缩放编码, 
+                "max_min": 最大最小, "max_scale": 最大缩放, 
+                "shape": (结束 - 起始, 维度), "bit_depth": self.位深, 
+                "vec_block": self.Config.INDEX_GSQ_BLOCK_SIZE
+            })
+        if 所有代表向量:
+            代表向量矩阵 = np.vstack(所有代表向量).astype(np.float32)
+            self.路由数据 = self._编码路由数据(代表向量矩阵)
+        self.exp = max(1, int(self.Config.INDEX_GSQ_MOE_EXP) if isinstance(self.Config.INDEX_GSQ_MOE_EXP, np.uint32) or self.Config.INDEX_GSQ_MOE_EXP > 1 else int(len(self.向量库) * self.Config.INDEX_GSQ_MOE_EXP))
+        self.日志("log.index.gsq.moe.exp", info_level=0, count=len(self.向量库)*2, exp=self.exp)
+    def Q4_SVD_LM反量化_路由(self, 数据字典):
+        行数, 维度 = 数据字典["Shape"]
+        量化索引 = 加速解包4(数据字典["PackedVector"], 行数 * 维度).reshape(行数, 维度 // 32, 32)
+        标准差 = 数据字典["Scale"].astype(np.float32).reshape(行数, 维度 // 32, 1) * 数据字典["MaxScale"]
+        重建 = self.LM中心[量化索引] * 标准差
+        return 重建.reshape(行数, 维度)
+    def search(self, query, k, nprobe=None):
+        if nprobe is None: nprobe = self.exp
+        if isinstance(self.映射表, list): self.映射表 = np.array(self.映射表)
+        查询矩阵 = np.atleast_2d(query).astype(np.float32)
+        查询数量 = 查询矩阵.shape[0]
+        查询范数 = np.linalg.norm(查询矩阵, axis=1, keepdims=True)
+        查询范数[查询范数 < 1e-8] = 1e-8
+        查询归一 = 查询矩阵 / 查询范数
+        总目标数 = sum(包["shape"][0] for 包 in self.向量库)
+        总块数 = len(self.向量库)
+        实际_k = min(k, 总目标数)
+        if 实际_k <= 0:
+            return np.empty((查询数量, 0), dtype=np.float32), np.empty((查询数量, 0), dtype=np.int64)
+        查询旋转 = self._应用分块旋转(查询归一, self.旋转块矩阵)
+        centroids_rot = self.Q4_SVD_LM反量化_路由(self.路由数据) 
+        路由分数_平铺 = 查询旋转 @ centroids_rot.T  
+        del centroids_rot, 查询旋转
+        路由分数_分块 = 路由分数_平铺.reshape(查询数量, 总块数, 2)
+        块路由分数 = np.max(路由分数_分块, axis=2)
+        del 路由分数_平铺, 路由分数_分块
+        actual_nprobe = min(nprobe, 总块数)
+        激活的块ID矩阵 = np.argpartition(块路由分数, -actual_nprobe, axis=1)[:, -actual_nprobe:]
+        唯一激活块ID = np.unique(激活的块ID矩阵)
+        del 块路由分数
+        TopK分数 = np.full((查询数量, 实际_k), -np.inf, dtype=np.float32)
+        TopK索引 = np.full((查询数量, 实际_k), -1, dtype=np.int64)
+        当前全局偏移 = 0
+        for 块ID, 数据包 in enumerate(self.向量库):
+            行数, 维度 = 数据包["shape"]
+            if 块ID not in 唯一激活块ID:
+                当前全局偏移 += 行数
+                continue 
+            块大小 = 数据包["vec_block"]
+            组数 = (行数 + 块大小 - 1) // 块大小
+            缩放值 = (np.asarray(数据包["scales"]).view(np.int16).astype(np.float32) / 32768.0 * 数据包["max_scale"]).reshape(组数, 维度)
+            最小值 = (np.asarray(数据包["mins"]).view(np.int16).astype(np.float32) / 32768.0 * 数据包["max_min"]).reshape(组数, 维度)
+            位深 = 数据包["bit_depth"]
+            量化值 = _解包(数据包, 位深, 行数, 维度)
+            块矩阵 = 批量反量化(量化值, 缩放值, 最小值, (1 << 位深) - 1, 块大小, 维度)
+            del 量化值
+            块范数 = 数据包.get("norms")
+            if 块范数 is None:
+                块范数 = np.linalg.norm(块矩阵, axis=1)
+                块范数[块范数 < 1e-8] = 1e-8
+            点积矩阵 = 查询归一 @ 块矩阵.T
+            当前块分数 = 点积矩阵 / 块范数[np.newaxis, :]
+            del 块矩阵, 点积矩阵
+            if 行数 > 实际_k:
+                块内TopK位置 = np.argpartition(当前块分数, -实际_k, axis=1)[:, -实际_k:]
+                块内TopK分数 = np.take_along_axis(当前块分数, 块内TopK位置, axis=1)
+                块内局部索引 = np.arange(当前全局偏移, 当前全局偏移 + 行数, dtype=np.int64)
+                块内TopK索引 = np.take_along_axis(np.tile(块内局部索引, (查询数量, 1)), 块内TopK位置, axis=1)
+            else:
+                块内TopK分数 = 当前块分数
+                块内TopK索引 = np.tile(np.arange(当前全局偏移, 当前全局偏移 + 行数, dtype=np.int64), (查询数量, 1))
+            合并分数 = np.hstack([TopK分数, 块内TopK分数])
+            合并索引 = np.hstack([TopK索引, 块内TopK索引])
+            最终TopK位置 = np.argpartition(合并分数, -实际_k, axis=1)[:, -实际_k:]
+            TopK分数 = np.take_along_axis(合并分数, 最终TopK位置, axis=1)
+            TopK索引 = np.take_along_axis(合并索引, 最终TopK位置, axis=1)
+            当前全局偏移 += 行数
+        排序顺序 = np.argsort(-TopK分数, axis=1)
+        TopK分数 = np.take_along_axis(TopK分数, 排序顺序, axis=1)
+        TopK索引 = np.take_along_axis(TopK索引, 排序顺序, axis=1)
+        原始TopK索引 = np.take(self.映射表, TopK索引).astype(np.int64)
+        if k > 总目标数:
+            填充索引 = np.full((查询数量, k - 总目标数), -1, dtype=np.int64)
+            填充分数 = np.full((查询数量, k - 总目标数), -np.inf, dtype=np.float32)
+            原始TopK索引 = np.hstack([原始TopK索引, 填充索引])
+            TopK分数 = np.hstack([TopK分数, 填充分数])
+        return TopK分数.astype(np.float32), 原始TopK索引
 def load(filename: str):
     with open(filename, 'rb') as f:
         d = pickle.load(f)
