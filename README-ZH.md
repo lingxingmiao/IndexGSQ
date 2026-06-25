@@ -103,8 +103,10 @@ start_time = time.time()
 index_moe.add(vectors) # MoE 包含训练路由特征的过程，首次构建较慢
 print(f"MoE 索引构建耗时：{time.time() - start_time:.2f}秒")
 
+
+
 start_time = time.time()
-# nprobe 控制每次查询激活的块数量，越小越快，越大越准
+# nprobe 控制每次查询激活的块数量，越小越快，越大越准 或者也可以使用index_moe.exp=5
 scores_moe, ids_moe = index_moe.search(query, k=10, nprobe=5) 
 print(f"MoE 搜索耗时：{time.time() - start_time:.4f}秒")
 print("MoE Top-10 索引 (第一个Query)：", ids_moe[0])
