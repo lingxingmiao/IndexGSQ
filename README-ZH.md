@@ -95,7 +95,7 @@ index_moe = indexgsq.IndexGSQKCosineMoE(
     vectors_block=128,
     reranker_block=128,
     quantization=2,
-    moe_exp=0.1 # 激活 10% 的专家块 (类似 IVF 的 nprobe 比例)
+    moe_exp=np.float32(0.1) # 激活 10% 的专家块 (类似 IVF 的 nprobe 比例) uint32为激活专家数量 float32为比例激活
 )
 
 print("\n开始构建 MoE 索引...")
