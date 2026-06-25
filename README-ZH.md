@@ -37,13 +37,6 @@ IndexGSQKCosineMoE 对标 faiss.IndexIVFScalarQuantizer
 
 ### 使用
 ```python
-## 安装与使用
-### 安装
-1. 复制 `indexgsq.py` 文件到您的项目下
-2. 安装需要的依赖 `pip install numpy numba faiss-cpu`
-
-### 使用
-```python
 import indexgsq
 import numpy as np
 import time
