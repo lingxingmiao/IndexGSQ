@@ -19,15 +19,13 @@
 - 导入向量时需要占用大量内存
 
 ### 索引方法
-- 速度排名: IndexGSQKCosineMoEHNSW > IndexGSQKCosineMoE > IndexGSQKCosineMoEPlus > IndexGSQKCosineFast > IndexGSQKCosine
-- 内存排名: IndexGSQKCosine < IndexGSQKCosineFast < IndexGSQKCosineMoE < IndexGSQKCosineMoEPlus < IndexGSQKCosineMoEHNSW
-- 召回率排名: IndexGSQKCosine = IndexGSQKCosineFast > IndexGSQKCosineMoEPlus = IndexGSQKCosineMoEHNSW > IndexGSQKCosineMoE
+- 速度排名: IndexGSQKCosineMoE > IndexGSQKCosineMoEPlus > IndexGSQKCosineFast > IndexGSQKCosine
+- 内存排名: IndexGSQKCosine < IndexGSQKCosineFast < IndexGSQKCosineMoE < IndexGSQKCosineMoEPlu
+- 召回率排名: IndexGSQKCosine = IndexGSQKCosineFast > IndexGSQKCosineMoEPlus > IndexGSQKCosineMoE
 
 IndexGSQKCosine 与 IndexGSQKCosineFast 对标 faiss.IndexFlatIP
 
 IndexGSQKCosineMoE 对标 faiss.IndexIVFScalarQuantizer
-
-IndexGSQKCosineMoEHNSW 还在制作中
 
 
 
