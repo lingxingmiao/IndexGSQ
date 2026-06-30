@@ -23,6 +23,8 @@
 - 内存排名: IndexGSQKCosine < IndexGSQKCosineFast < IndexGSQKCosineMoE < IndexGSQKCosineMoEPlu
 - 召回率排名: IndexGSQKCosine = IndexGSQKCosineFast > IndexGSQKCosineMoEPlus > IndexGSQKCosineMoE
 
+IndexGSQKCosineMoE 取块内平均为专家 IndexGSQKCosineMoEPlus 则是头尾两个向量为专家
+
 IndexGSQKCosine 与 IndexGSQKCosineFast 对标 faiss.IndexFlatIP
 
 IndexGSQKCosineMoE 对标 faiss.IndexIVFScalarQuantizer
